@@ -3,8 +3,7 @@ import csv
 import chardet
 from difflib import unified_diff
 
-__version__ = "1.1.0"  # Формат: MAJOR.MINOR.PATCH
-def detect_encoding(file_path):
+__version__ = "1.2.1"  # Обновлен шрифт по умолчанию(file_path):
     with open(file_path, 'rb') as f:
         return chardet.detect(f.read())['encoding']
 
