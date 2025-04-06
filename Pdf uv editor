@@ -1,0 +1,347 @@
+import fitz  # PyMuPDF
+import csv
+import chardet
+from difflib import unified_diff
+
+__version__ = "1.1.0"  # Формат: MAJOR.MINOR.PATCH
+def detect_encoding(file_path):
+    with open(file_path, 'rb') as f:
+        return chardet.detect(f.read())['encoding']
+
+
+def clean_value(value):
+    """Очистка значений от лишних символов"""
+    if not value: return "0.0"
+    value = str(value).replace(' ', '').replace(',', '.')
+    return value if value.replace('.', '', 1).isdigit() else "0.0"
+
+
+def find_table_coordinates(pdf_path, start_marker="StartSample"):
+    """Находит координаты таблицы и футера"""
+    doc = fitz.open(pdf_path)
+    table_coords = None
+    footer_coords = None
+    footer_text = ""
+
+    for page_num, page in enumerate(doc):
+        # Собираем все spans со страницы сгруппированные по y-координате
+        spans_by_y = {}
+        for block in page.get_text("dict")["blocks"]:
+            if "lines" not in block:
+                continue
+            for line in block["lines"]:
+                for span in line["spans"]:
+                    y = round(span["bbox"][1], 1)  # Округляем y-координату
+                    if y not in spans_by_y:
+                        spans_by_y[y] = []
+                    spans_by_y[y].append(span)
+
+        # Обрабатываем строки (группы spans с одинаковой y-координатой)
+        for y, spans in sorted(spans_by_y.items()):
+            # Собираем полный текст строки
+            line_text = "".join(span["text"] for span in spans)
+
+            # Ищем начало таблицы
+            if not table_coords and start_marker in line_text:
+                # Сортируем spans по x-координате
+                spans_sorted = sorted(spans, key=lambda s: s["bbox"][0])
+                if len(spans_sorted) >= 3:
+                    # Координаты столбцов
+                    x1 = spans_sorted[0]["bbox"][0]  # Начало первого столбца
+                    x2 = spans_sorted[1]["bbox"][2]  # Конец второго столбца
+                    x3 = spans_sorted[2]["bbox"][2]  # Конец третьего столбца
+                    table_coords = {
+                        "page_num": page_num,
+                        "x1": x1, "x2": x2, "x3": x3,
+                        "start_y": y,
+                        "font": spans_sorted[0]["font"],
+                        "size": spans_sorted[0]["size"]
+                    }
+
+            # Ищем футер
+            if "Results Flags Legend" in line_text:
+                footer_coords = {
+                    "page_num": page_num,
+                    "bbox": fitz.Rect(0, y, page.rect.width, page.rect.height)
+                }
+                # Добавляем следующие 4 строки после футера
+                next_lines = []
+                next_ys = sorted([yy for yy in spans_by_y.keys() if yy > y])
+                for ny in next_ys[:4]:
+                    next_line = "".join(span["text"] for span in spans_by_y[ny])
+                    next_lines.append(next_line)
+                footer_text = line_text + "\n" + "\n".join(next_lines)
+
+    doc.close()
+    return table_coords, footer_coords, footer_text
+
+
+def extract_table_from_pdf(pdf_path, table_coords):
+    """Извлекает таблицу по координатам"""
+    if not table_coords:
+        return None
+
+    doc = fitz.open(pdf_path)
+    page = doc[table_coords["page_num"]]
+    table_data = []
+
+    # Собираем все spans со страницы сгруппированные по y-координате
+    spans_by_y = {}
+    for block in page.get_text("dict")["blocks"]:
+        if "lines" not in block:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                y = round(span["bbox"][1], 1)
+                if y not in spans_by_y:
+                    spans_by_y[y] = []
+                spans_by_y[y].append(span)
+
+    # Получаем y-координаты строк таблицы (от start_y и ниже)
+    table_ys = [y for y in spans_by_y.keys() if y >= table_coords["start_y"]]
+    table_ys = sorted(table_ys)
+
+    for y in table_ys:
+        spans = spans_by_y[y]
+        # Сортируем spans по x-координате
+        spans_sorted = sorted(spans, key=lambda s: s["bbox"][0])
+
+        # Получаем значения для каждого столбца
+        col1 = ""
+        col2 = ""
+        col3 = ""
+
+        for span in spans_sorted:
+            # Первый столбец
+            if span["bbox"][0] <= table_coords["x1"] + 5:
+                col1 = span["text"].strip()
+            # Второй столбец
+            elif span["bbox"][2] <= table_coords["x2"] + 5:
+                col2 = span["text"].strip()
+            # Третий столбец
+            elif span["bbox"][2] <= table_coords["x3"] + 5:
+                col3 = span["text"].strip()
+
+        if col1 or col2 or col3:
+            table_data.append({
+                "col1": col1,
+                "col2": col2,
+                "col3": col3,
+                "y": y,
+                "spans": spans_sorted
+            })
+
+    doc.close()
+    return table_data
+
+
+# Остальные функции остаются без изменений (extract_table_from_csv, edit_pdf_from_csv, verify_pdf)
+
+def extract_table_from_csv(csv_path, encoding, first_sample_name):
+    """Извлекает таблицу из CSV"""
+    with open(csv_path, mode='r', encoding=encoding) as csv_file:
+        csv_reader = csv.reader(csv_file)
+        csv_data = []
+        found_start = False
+
+        for row in csv_reader:
+            if not found_start:
+                if row and row[0].strip() == first_sample_name:
+                    found_start = True
+                else:
+                    continue
+
+            if len(row) >= 3:
+                sample = row[0].strip()
+                conc = clean_value(row[1])
+                reading = clean_value(row[2])
+                csv_data.append((sample, conc, reading))
+
+    return csv_data
+
+
+def edit_pdf_from_csv(
+        input_pdf_path: str,
+        output_pdf_path: str,
+        csv_data_path: str,
+        pdf_first_sample: str = "StartSample",
+        csv_first_sample: str = "Blank_1",
+        align_sample: str = "left",
+        align_conc: str = "right",
+        align_reading: str = "right",
+):
+    # Определяем кодировку CSV
+    encoding = detect_encoding(csv_data_path)
+    print(f"Определена кодировка CSV: {encoding}")
+
+    # Находим координаты таблицы и футера
+    table_coords, footer_coords, footer_text = find_table_coordinates(input_pdf_path, pdf_first_sample)
+
+    if not table_coords:
+        print(f"Ошибка: не найден маркер '{pdf_first_sample}' в PDF")
+        return
+
+    print(f"\nКоординаты таблицы:")
+    print(f"Страница: {table_coords['page_num']}")
+    print(f"X1 (начало 1 столбца): {table_coords['x1']:.2f}")
+    print(f"X2 (конец 2 столбца): {table_coords['x2']:.2f}")
+    print(f"X3 (конец 3 столбца): {table_coords['x3']:.2f}")
+    print(f"Шрифт: {table_coords['font']}")
+    print(f"Размер шрифта: {table_coords['size']}")
+
+    if footer_coords:
+        print(f"\nНайден футер на странице {footer_coords['page_num']}:")
+        print(footer_text)
+    else:
+        print("\nФутер не найден")
+
+    # Извлекаем данные из CSV
+    csv_data = extract_table_from_csv(csv_data_path, encoding, csv_first_sample)
+    if not csv_data:
+        print(f"\nОшибка: не найден первый образец '{csv_first_sample}' в CSV или нет данных")
+        return
+
+    print(f"\nНайдено {len(csv_data)} строк в CSV")
+    print("Первые 5 строк CSV:")
+    for i, row in enumerate(csv_data[:5]):
+        print(f"{i + 1}: {row[0]:20} {row[1]:>10} {row[2]:>10}")
+
+    # Извлекаем таблицу из PDF
+    pdf_table = extract_table_from_pdf(input_pdf_path, table_coords)
+    if not pdf_table:
+        print("\nОшибка: не удалось извлечь таблицу из PDF")
+        return
+
+    print(f"\nНайдено {len(pdf_table)} строк в PDF таблице")
+    print("Первые 5 строк PDF:")
+    for i, row in enumerate(pdf_table[:5]):
+        print(f"{i + 1}: {row['col1']:20} {row['col2']:>10} {row['col3']:>10}")
+
+    # Проверяем соответствие количества строк
+    if len(csv_data) != len(pdf_table):
+        print(f"\nВнимание: количество строк в CSV ({len(csv_data)}) и PDF ({len(pdf_table)}) не совпадает")
+
+    # Открываем PDF для редактирования
+    doc = fitz.open(input_pdf_path)
+    page = doc[table_coords["page_num"]]
+    edited_lines = 0
+
+    # Обрабатываем строки таблицы
+    for i, (pdf_row, csv_row) in enumerate(zip(pdf_table, csv_data)):
+        if i >= len(csv_data):
+            break
+
+        try:
+            new_sample, new_conc, new_reading = csv_row
+
+            # Форматирование с выравниванием
+            sample_text = new_sample.ljust(30) if align_sample == "left" else new_sample.rjust(30)
+            conc_text = f"{float(new_conc):.2f}".rjust(10) if align_conc == "right" else f"{float(new_conc):.2f}".ljust(
+                10)
+            reading_text = f"{float(new_reading):.4f}".rjust(
+                10) if align_reading == "right" else f"{float(new_reading):.4f}".ljust(10)
+
+            # Получаем координаты для замены
+            x0 = min(span["bbox"][0] for span in pdf_row["spans"])
+            y0 = pdf_row["y"]
+            x1 = max(span["bbox"][2] for span in pdf_row["spans"])
+            y1 = max(span["bbox"][3] for span in pdf_row["spans"])
+
+            # Замена текста с сохранением оригинального шрифта
+            page.add_redact_annot(fitz.Rect(x0, y0, x1, y1))
+            page.apply_redactions()
+            page.insert_text(
+                (x0, y0 + 1),
+                f"{sample_text} {conc_text} {reading_text}",
+                fontname=table_coords["font"],
+                fontsize=table_coords["size"],
+            )
+
+            print(f"\nЗамена [{i + 1}]:")
+            print(f"Было: {pdf_row['col1']} {pdf_row['col2']} {pdf_row['col3']}")
+            print(f"Стало: {sample_text} {conc_text} {reading_text}")
+            edited_lines += 1
+
+        except Exception as e:
+            print(f"\nОшибка обработки строки {i + 1}: {e}")
+            continue
+
+    # Выделяем футер цветом
+    if footer_coords:
+        footer_page = doc[footer_coords["page_num"]]
+        for span in footer_coords["spans"]:
+            rect = fitz.Rect(*span["bbox"])
+            footer_page.add_highlight_annot(rect)
+        print("\nФутер выделен цветом")
+
+    # Сохраняем изменения
+    doc.save(output_pdf_path)
+    doc.close()
+
+    print("\nИтог:")
+    print(f"Всего строк в CSV: {len(csv_data)}")
+    print(f"Обработано строк: {edited_lines}")
+    print(f"Сохранено в: {output_pdf_path}")
+
+    # Проверка результатов (используем маркер из CSV)
+    print("\nПроверка координат в модифицированном файле:")
+    verify_pdf(output_pdf_path, csv_first_sample)
+
+
+def verify_pdf(pdf_path, start_marker):
+    """Проверяет координаты в модифицированном PDF"""
+    doc = fitz.open(pdf_path)
+    table_coords, _, _ = find_table_coordinates(pdf_path, start_marker)
+
+    if not table_coords:
+        print("Не удалось проверить координаты - маркер не найден")
+        return
+
+    print(f"Проверка координат X1, X2, X3:")
+    print(f"Ожидаемые X1: {table_coords['x1']:.2f}")
+    print(f"Ожидаемые X2: {table_coords['x2']:.2f}")
+    print(f"Ожидаемые X3: {table_coords['x3']:.2f}")
+
+    # Проверяем первую строку таблицы
+    page = doc[table_coords["page_num"]]
+    spans_by_y = {}
+    for block in page.get_text("dict")["blocks"]:
+        if "lines" not in block:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                y = round(span["bbox"][1], 1)
+                if y not in spans_by_y:
+                    spans_by_y[y] = []
+                spans_by_y[y].append(span)
+
+    # Находим spans для первой строки таблицы
+    spans = []
+    for y in sorted(spans_by_y.keys()):
+        if y >= table_coords["start_y"]:
+            spans = spans_by_y[y]
+            break
+
+    if len(spans) >= 3:
+        spans_sorted = sorted(spans, key=lambda s: s["bbox"][0])
+        print("\nФактические координаты в модифицированном файле:")
+        print(f"X1 (первый столбец): {spans_sorted[0]['bbox'][0]:.2f}")
+        print(f"X2 (второй столбец): {spans_sorted[1]['bbox'][2]:.2f}")
+        print(f"X3 (третий столбец): {spans_sorted[2]['bbox'][2]:.2f}")
+    else:
+        print("\nНе удалось проверить координаты столбцов")
+
+    doc.close()
+
+
+# Пример использования
+edit_pdf_from_csv(
+    input_pdf_path=r"E:\Рабочий стол\PDFUVTest\Concentration.pdf",
+    output_pdf_path=r"E:\Рабочий стол\PDFUVTest\Concentration_modified.pdf",
+    csv_data_path=r"E:\Рабочий стол\PDFUVTest\DM2_Valid_2.csv",
+    pdf_first_sample="StartSample",  # Имя первого образца в PDF
+    csv_first_sample="Blank_1",  # Имя первого образца в CSV
+    align_sample="left",
+    align_conc="right",
+    align_reading="right"
+)
