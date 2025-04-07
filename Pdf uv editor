@@ -10,14 +10,18 @@ def detect_encoding(file_path):
 
 
 def clean_value(value):
-    """Очистка значений от лишних символов"""
+    """Конвертирует строку в число, заменяя запятые на точки и удаляя пробелы"""
     if not value:
-        return "0.0"
-    value = str(value).strip()
-    value = value.replace(',', '.').replace(' ', '')
-    if not value.replace('.', '').isdigit():
-        return "0.0"
-    return value
+        return 0.0
+
+    # Удаляем все пробелы и заменяем запятые на точки
+    value_clean = str(value).strip().replace(" ", "").replace(",", ".")
+
+    try:
+        return float(value_clean)
+    except ValueError:
+        print(f"⚠️ Некорректное значение: '{value}'. Используется 0.0")
+        return 0.0
 
 
 def find_table_coordinates(pdf_path, start_marker="StartSample"):
@@ -110,12 +114,12 @@ def extract_table_from_pdf(pdf_path, table_coords):
         spans = spans_by_y[y]
         # Сортируем spans по x-координате
         spans_sorted = sorted(spans, key=lambda s: s["bbox"][0])
-        
+
         # Получаем значения для каждого столбца
         col1 = ""
         col2 = ""
         col3 = ""
-        
+
         for span in spans_sorted:
             # Первый столбец
             if span["bbox"][0] <= table_coords["x1"] + 5:
@@ -143,25 +147,35 @@ def extract_table_from_pdf(pdf_path, table_coords):
 # Остальные функции остаются без изменений (extract_table_from_csv, edit_pdf_from_csv, verify_pdf)
 
 def extract_table_from_csv(csv_path, encoding, first_sample_name):
-    """Извлекает таблицу из CSV"""
+    """Извлекает данные из CSV с учетом запятых как десятичных разделителей"""
+    csv_data = []
+    found_start = False
+
     with open(csv_path, mode='r', encoding=encoding) as csv_file:
         csv_reader = csv.reader(csv_file)
-        csv_data = []
-        found_start = False
 
         for row in csv_reader:
+            if not row:  # Пропускаем пустые строки
+                continue
+
+            # Ищем стартовый маркер
             if not found_start:
-                if row and row[0].strip() == first_sample_name:
+                if row[0].strip() == first_sample_name:
                     found_start = True
                 else:
                     continue
 
+            # Обрабатываем только строки с 3+ колонками
             if len(row) >= 3:
-                sample = row[0].strip()
-                conc = clean_value(row[1])
-                reading = clean_value(row[2])
-                csv_data.append((sample, conc, reading))
-
+                try:
+                    # print("csv_row", row)
+                    sample = row[0].strip()
+                    conc = clean_value(row[1])
+                    reading = clean_value(row[3])
+                    csv_data.append((sample, conc, reading))
+                except Exception as e:
+                    print(f"Ошибка обработки строки {row}: {str(e)}")
+    print("csv_data", csv_data)
     return csv_data
 
 
@@ -174,6 +188,7 @@ def edit_pdf_from_csv(
         align_sample: str = "left",
         align_conc: str = "right",
         align_reading: str = "right",
+        default_font: str = "Arial",
 ):
     # Определяем кодировку CSV
     encoding = detect_encoding(csv_data_path)
@@ -229,6 +244,8 @@ def edit_pdf_from_csv(
     # Открываем PDF для редактирования
     doc = fitz.open(input_pdf_path)
     page = doc[table_coords["page_num"]]
+    page.insert_font(fontname="CourierNewPSMT",
+                      fontfile=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\courier-new.otf")
     edited_lines = 0
 
     # Обрабатываем строки таблицы
@@ -241,8 +258,10 @@ def edit_pdf_from_csv(
 
             # Форматирование с выравниванием
             sample_text = new_sample.ljust(30) if align_sample == "left" else new_sample.rjust(30)
-            conc_text = f"{float(new_conc):.2f}".rjust(10) if align_conc == "right" else f"{float(new_conc):.2f}".ljust(10)
-            reading_text = f"{float(new_reading):.4f}".rjust(10) if align_reading == "right" else f"{float(new_reading):.4f}".ljust(10)
+            conc_text = f"{float(new_conc):.2f}".rjust(10) if align_conc == "right" else f"{float(new_conc):.2f}".ljust(
+                10)
+            reading_text = f"{float(new_reading):.4f}".rjust(
+                10) if align_reading == "right" else f"{float(new_reading):.4f}".ljust(10)
 
             # Получаем координаты для замены
             x0 = min(span["bbox"][0] for span in pdf_row["spans"])
@@ -256,7 +275,8 @@ def edit_pdf_from_csv(
             page.insert_text(
                 (x0, y0 + 1),
                 f"{sample_text} {conc_text} {reading_text}",
-                fontname=table_coords["font"],
+                fontname="CourierNewPSMT",
+                # fontname=table_coords["font"],
                 fontsize=table_coords["size"],
             )
 
@@ -337,14 +357,17 @@ def verify_pdf(pdf_path, start_marker):
     doc.close()
 
 
+
 # Пример использования
+
 edit_pdf_from_csv(
-    input_pdf_path=r"E:\Рабочий стол\PDFUVTest\Concentration.pdf",
-    output_pdf_path=r"E:\Рабочий стол\PDFUVTest\Concentration_modified.pdf",
-    csv_data_path=r"E:\Рабочий стол\PDFUVTest\DM2_Valid_2.csv",
+    input_pdf_path=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\TestFiles\Concentration.pdf",
+    output_pdf_path=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\TestFiles\Concentration_modified5.pdf",
+    csv_data_path=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\TestFiles\AnCyc_DM2.csv",
     pdf_first_sample="StartSample",  # Имя первого образца в PDF
     csv_first_sample="Blank_1",  # Имя первого образца в CSV
     align_sample="left",
     align_conc="right",
-    align_reading="right"
+    align_reading="right",
+    default_font = "CourierNew"
 )
