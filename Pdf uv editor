@@ -335,9 +335,9 @@ def verify_pdf(pdf_path, start_marker):
 
 # Пример использования
 edit_pdf_from_csv(
-    input_pdf_path=r"E:\Рабочий стол\PDFUVTest\Concentration.pdf",
-    output_pdf_path=r"E:\Рабочий стол\PDFUVTest\Concentration_modified.pdf",
-    csv_data_path=r"E:\Рабочий стол\PDFUVTest\DM2_Valid_2.csv",
+    input_pdf_path=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\TestFiles\Concentration.pdf",
+    output_pdf_path=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\TestFiles\Concentration_modified.pdf",
+    csv_data_path=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\TestFiles\AnCyc_DM2.csv",
     pdf_first_sample="StartSample",  # Имя первого образца в PDF
     csv_first_sample="Blank_1",  # Имя первого образца в CSV
     align_sample="left",
