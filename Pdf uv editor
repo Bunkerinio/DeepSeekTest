@@ -3,16 +3,21 @@ import csv
 import chardet
 from difflib import unified_diff
 
-__version__ = "1.2.1"  # Обновлен шрифт по умолчанию(file_path):
+
+def detect_encoding(file_path):
     with open(file_path, 'rb') as f:
         return chardet.detect(f.read())['encoding']
 
 
 def clean_value(value):
     """Очистка значений от лишних символов"""
-    if not value: return "0.0"
-    value = str(value).replace(' ', '').replace(',', '.')
-    return value if value.replace('.', '', 1).isdigit() else "0.0"
+    if not value:
+        return "0.0"
+    value = str(value).strip()
+    value = value.replace(',', '.').replace(' ', '')
+    if not value.replace('.', '').isdigit():
+        return "0.0"
+    return value
 
 
 def find_table_coordinates(pdf_path, start_marker="StartSample"):
@@ -61,7 +66,8 @@ def find_table_coordinates(pdf_path, start_marker="StartSample"):
             if "Results Flags Legend" in line_text:
                 footer_coords = {
                     "page_num": page_num,
-                    "bbox": fitz.Rect(0, y, page.rect.width, page.rect.height)
+                    "spans": spans.copy(),
+                    "text": line_text
                 }
                 # Добавляем следующие 4 строки после футера
                 next_lines = []
@@ -104,12 +110,12 @@ def extract_table_from_pdf(pdf_path, table_coords):
         spans = spans_by_y[y]
         # Сортируем spans по x-координате
         spans_sorted = sorted(spans, key=lambda s: s["bbox"][0])
-
+        
         # Получаем значения для каждого столбца
         col1 = ""
         col2 = ""
         col3 = ""
-
+        
         for span in spans_sorted:
             # Первый столбец
             if span["bbox"][0] <= table_coords["x1"] + 5:
@@ -235,10 +241,8 @@ def edit_pdf_from_csv(
 
             # Форматирование с выравниванием
             sample_text = new_sample.ljust(30) if align_sample == "left" else new_sample.rjust(30)
-            conc_text = f"{float(new_conc):.2f}".rjust(10) if align_conc == "right" else f"{float(new_conc):.2f}".ljust(
-                10)
-            reading_text = f"{float(new_reading):.4f}".rjust(
-                10) if align_reading == "right" else f"{float(new_reading):.4f}".ljust(10)
+            conc_text = f"{float(new_conc):.2f}".rjust(10) if align_conc == "right" else f"{float(new_conc):.2f}".ljust(10)
+            reading_text = f"{float(new_reading):.4f}".rjust(10) if align_reading == "right" else f"{float(new_reading):.4f}".ljust(10)
 
             # Получаем координаты для замены
             x0 = min(span["bbox"][0] for span in pdf_row["spans"])
@@ -335,9 +339,9 @@ def verify_pdf(pdf_path, start_marker):
 
 # Пример использования
 edit_pdf_from_csv(
-    input_pdf_path=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\TestFiles\Concentration.pdf",
-    output_pdf_path=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\TestFiles\Concentration_modified.pdf",
-    csv_data_path=r"C:\Users\Admin\Desktop\PythonProjects\PDFCaryUVEditor\TestFiles\AnCyc_DM2.csv",
+    input_pdf_path=r"E:\Рабочий стол\PDFUVTest\Concentration.pdf",
+    output_pdf_path=r"E:\Рабочий стол\PDFUVTest\Concentration_modified.pdf",
+    csv_data_path=r"E:\Рабочий стол\PDFUVTest\DM2_Valid_2.csv",
     pdf_first_sample="StartSample",  # Имя первого образца в PDF
     csv_first_sample="Blank_1",  # Имя первого образца в CSV
     align_sample="left",
